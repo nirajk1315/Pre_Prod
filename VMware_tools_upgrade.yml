@@ -1,0 +1,89 @@
+---
+- hosts: Servers
+  remote_user: nirajk1315
+  become: yes
+  vars:
+     dst_bin_location: /tmp/
+  vars_prompt:
+    # "feed the VMware tools Version with path src_bin_location - ex: /tmp/mnt/VMwareTools-10.0.6-3560309.tar.gz"
+    - name: "src_bin_location"
+      prompt: "src_bin_location" 
+
+  tasks:
+   - name: Decision point to start patching
+     fail: msg="{{ inventory_hostname }} is  a virutal box so code with proceed with   tools upgrade on the remote host."
+     when: ansible_virtualization_type == "virtualbox"
+
+   - name: Check VMware Tools Status
+     shell: "vmtoolsd -v"
+     register: vmtools_version
+     ignore_errors: yes
+
+   - name: VMwareTools Version
+     debug:
+       msg: "VMware Tools version: {{ vmtools_version.stdout }}"
+
+   - name: Check installed Kernel version
+     shell: "uname -r"
+     register: kernel_ver
+
+   - name: Checking Necessary system RPM
+     yum : name={{item}} state=present
+     with_items:
+         - gcc
+         - kernel-devel-{{ kernel_ver.stdout }}
+         - kernel-headers-{{ kernel_ver.stdout }}
+     ignore_errors: yes
+
+   - name: Copy VMtools Binaries From source to Destination server
+     copy: src={{ src_bin_location }} dest={{dst_bin_location }}
+
+   - name: Unarchive
+     shell: /bin/tar -xvf {{dst_bin_location}}VM* 
+     args:
+       chdir: "{{dst_bin_location}}"
+     warn: False
+
+   # This task is to upgrade  the VMware tools version  based on the kernel update
+   - name: Check if VMware tools update  is required based on the kernel status
+     shell: Kernel_Now=$(uname -r);Kernel_New=$(rpm -qa kernel --last | head -1 | awk '{print $1}' | sed 's/kernel-//'); if [ $Kernel_Now != $Kernel_New ]; then echo "upgrade_needed"; else echo "upgrade_not_needed"; fi
+     ignore: true
+     register: upgrade_required
+
+   - name: Change path to execution dir and run upgrade binary
+     command: "perl vmware-install.pl -d"
+     args:
+        chdir: "{{ dst_bin_location }}/vmware-tools-distrib"
+     when: upgrade_required.stdout == "upgrade_needed" and ansible_virtualization_type == "VMware"
+
+
+   - name: Check New VMware Tools Status
+     shell: "vmtoolsd -v"
+     register: vmtools_nversion
+     ignore_errors: yes
+   - name: New VMwareTools Version
+     debug:
+       msg: "VMware Tools version: {{ vmtools_nversion.stdout }}"
+   - name: Check VMtools Directory
+     stat:
+        path: /etc/init/vmware-tools.conf
+     register: fstat
+   - name: Chkconfig if legacy OS
+     command: "chkconfig vmware-tools on"
+     when : not fstat.stat.exists
+   - name: Restart VMtools
+     command: "/etc/init.d/vmware-tools restart"
+     when : not fstat.stat.exists
+     register: d_out
+   - name: Restart VMtools
+     command: "/etc/vmware-tools/services.sh restart"
+     register: d_out_v1
+     ignore_errors: yes
+   - name: (Legacy) Status After Restart
+     debug:
+       msg: "{{ d_out.stdout }}"
+     when: not fstat.stat.exists
+   - name: Status After restart
+     debug:
+       msg: "{{ d_out_v1.stdout }}"
+     when: fstat.stat.exists
